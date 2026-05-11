@@ -15,12 +15,24 @@ SECURITY_SYSTEM = (
 _MAX_USER_CHARS = 12_000
 
 
-def analyze_log_snippet(log_text: str, *, timeout: float = 120.0) -> str:
-    """로그 텍스트 일부를 LLM에 보내 분석 문장을 반환한다."""
+def analyze_log_snippet(
+    log_text: str,
+    *,
+    model: str | None = None,
+    timeout: float = 120.0,
+) -> str:
+    """로그 텍스트 일부를 LLM에 보내 분석 문장을 반환한다.
+
+    Args:
+        log_text: 분석할 로그 본문.
+        model: OpenAI 호환 ``model`` id. None이면 ``TEAM_VLLM_MODEL``(환경 기본값).
+        timeout: API 타임아웃(초).
+    """
     text = (log_text or "").strip()
     if not text:
         return "(빈 로그)"
 
+    model_id = (model or "").strip() or TEAM_VLLM_MODEL
     payload = text[-_MAX_USER_CHARS:]
     client = OpenAI(
         base_url=TEAM_VLLM_BASE_URL.rstrip("/"),
@@ -29,7 +41,7 @@ def analyze_log_snippet(log_text: str, *, timeout: float = 120.0) -> str:
     )
     try:
         resp = client.chat.completions.create(
-            model=TEAM_VLLM_MODEL,
+            model=model_id,
             messages=[
                 {"role": "system", "content": SECURITY_SYSTEM},
                 {"role": "user", "content": payload},

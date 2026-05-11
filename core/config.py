@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import os
 
-# 공유 엔드포인트는 고정. 모델 id는 서버 `/v1/models`에 등록된 이름과 일치해야 함.
-# (예: gemma4:26b, gemma4, ollama/gemma4:26b 등 — 배포마다 다를 수 있음)
+# 공유 엔드포인트는 고정. 모델 id는 팀 로컬 설정·`/v1/models`와 일치해야 함.
+# 팀 기본(로컬 config 권장): qwen3-vl — 대안 예: qwen3-vl:latest, ollama/qwen3-vl, openai/qwen3-vl
 TEAM_VLLM_BASE_URL = "http://10.226.50.2/v1"
-TEAM_VLLM_MODEL = os.getenv("VLLM_MODEL", "gemma4:26b")
+TEAM_VLLM_MODEL = os.getenv("VLLM_MODEL", "qwen3-vl")
 
 
 def team_vllm_models_url() -> str:

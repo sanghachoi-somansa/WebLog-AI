@@ -36,6 +36,14 @@ LLM_SNIPPET_CHARS = 8_000
 MAX_PENDING_LLM = 2
 
 # Somansa 제품 로그 프리셋
+# 팀 로컬 LLM 설정과 동일한 id (사이드바에서 선택)
+LLM_MODEL_PRESETS: tuple[tuple[str, str], ...] = (
+    ("Qwen3-VL (Base)", "qwen3-vl"),
+    ("Qwen3-VL (Latest)", "qwen3-vl:latest"),
+    ("Qwen3-VL (Ollama 경로)", "ollama/qwen3-vl"),
+    ("Qwen3-VL (OpenAI 경로)", "openai/qwen3-vl"),
+)
+
 LOG_PATH_PRESETS: tuple[tuple[str, str], ...] = (
     ("1. dlpcenter.log", "/somansa/dlpcenter/tomcat/logs/dlpcenter.log"),
     ("2. queryserver.log", "/somansa/common/tomcat_queryserver/logs/queryserver.log"),
@@ -120,6 +128,7 @@ def _ensure_session_defaults() -> None:
         "line_count_since_llm": 0,
         "llm_futures": [],
         "llm_cooldown_until": 0.0,
+        "vllm_model_id": TEAM_VLLM_MODEL,
     }
     for key, val in defaults.items():
         st.session_state.setdefault(key, val)
@@ -261,7 +270,8 @@ def _schedule_llm_if_needed() -> None:
     st.session_state["line_count_since_llm"] = 0
 
     ex: ThreadPoolExecutor = st.session_state["llm_executor"]
-    fut = ex.submit(analyze_log_snippet, snippet)
+    model_id = str(st.session_state.get("vllm_model_id") or TEAM_VLLM_MODEL).strip()
+    fut = ex.submit(analyze_log_snippet, snippet, model=model_id)
     futures.append(fut)
     st.session_state["llm_futures"] = futures
 
@@ -318,21 +328,42 @@ def _render_sidebar() -> None:
         placeholder="/var/log/messages",
     )
 
-    st.sidebar.subheader("LLM (팀 공용, 고정)")
+    st.sidebar.subheader("LLM (팀 공용)")
     st.sidebar.markdown(
         f"- **Base URL:** `{TEAM_VLLM_BASE_URL}`\n"
-        f"- **모델:** `{TEAM_VLLM_MODEL}`\n"
         f"- **등록 모델 목록:** [{team_vllm_models_url()}]({team_vllm_models_url()})"
     )
+    _presets = list(LLM_MODEL_PRESETS)
+    _labels = [p[0] for p in _presets]
+    _ids = [p[1] for p in _presets]
+    if TEAM_VLLM_MODEL not in _ids:
+        _labels.insert(0, f"환경 기본 ({TEAM_VLLM_MODEL})")
+        _ids.insert(0, TEAM_VLLM_MODEL)
+
+    _cur = str(st.session_state.get("vllm_model_id") or TEAM_VLLM_MODEL).strip()
+    if _cur not in _ids:
+        st.session_state["vllm_model_id"] = TEAM_VLLM_MODEL
+        _cur = TEAM_VLLM_MODEL
+    _idx = _ids.index(_cur)
+
+    _choice = st.sidebar.selectbox(
+        "분석 모델",
+        options=_labels,
+        index=_idx,
+        key="llm_model_select_label",
+        disabled=not llm_enabled(),
+    )
+    st.session_state["vllm_model_id"] = _ids[_labels.index(_choice)]
+
     if not llm_enabled():
         st.sidebar.warning(
             "`DISABLE_LLM=1` 이 설정되어 **분석 API 호출이 꺼져** 있습니다. "
             "SSH 로그만 수집합니다."
         )
     st.sidebar.caption(
-        "모델 id는 `.env`의 `VLLM_MODEL`로 바꿀 수 있습니다. "
-        "`500`·`Connection error`·`litellm`은 보통 **LiteLLM→백엔드(Ollama 등) 연결 문제**입니다.\n"
-        "로그만 보려면 `.env`에 `DISABLE_LLM=1` — 반복 호출 간격은 `LLM_COOLDOWN_AFTER_ERROR`(초)."
+        f"API `model`: `{st.session_state['vllm_model_id']}` — 첫 기본값은 `.env`의 "
+        "`VLLM_MODEL`(없으면 코드 기본). `500`·`Connection error` 등은 백엔드·라우팅 이슈일 수 있음. "
+        "로그만: `.env`에 `DISABLE_LLM=1`, 반복 간격: `LLM_COOLDOWN_AFTER_ERROR`(초)."
     )
 
 

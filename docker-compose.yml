@@ -21,6 +21,13 @@
 #       CADDY_IMAGE=caddy:2-alpine
 #       PYTHON_BASE=python:3.12-slim-bookworm
 #   - 첫 pull 지연 시 10~15분 후 재시도 (NLAB 캐싱 미러 안내)
+#
+# 사내 docker.lab.somansa.com pull 시 TLS 오류(x509 unknown authority) 나면:
+#   sudo mkdir -p /etc/docker/certs.d/docker.lab.somansa.com
+#   sudo cp /etc/pki/ca-trust/source/anchors/somansa-root-ca.pem \
+#            /etc/docker/certs.d/docker.lab.somansa.com/ca.crt
+#   (또는 NLAB 정적 루트 CA: rocky 미러의 cert.sh 재실행 또는 IT 안내 경로)
+#   sudo systemctl restart docker
 
 services:
   app:
