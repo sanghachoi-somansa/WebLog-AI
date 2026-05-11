@@ -16,9 +16,10 @@
 # Docker Hub 타임아웃 / TLS 문제 시:
 #   - Somansa NLAB: `curl http://rocky.mirror.lab.somansa.com/cert.sh | sudo bash -`
 #     및 `curl http://rocky.mirror.lab.somansa.com/docker.sh | sudo bash -`
-#   - 이미지는 Hub 경로 앞에 미러 붙임: docker.lab.somansa.com/<이미지>
-#     → `.env` 에 예: CADDY_IMAGE=docker.lab.somansa.com/caddy:2-alpine
-#       PYTHON_BASE=docker.lab.somansa.com/library/python:3.12-slim-bookworm
+#   - 이미지는 Hub 경로 앞에 미러 붙임 (NLAB 문서): docker.lab.somansa.com/<이미지>
+#   - 기본값은 사내 미러를 쓰도록 설정됨. Docker Hub 직접 쓸 때는 `.env` 에:
+#       CADDY_IMAGE=caddy:2-alpine
+#       PYTHON_BASE=python:3.12-slim-bookworm
 #   - 첫 pull 지연 시 10~15분 후 재시도 (NLAB 캐싱 미러 안내)
 
 services:
@@ -26,7 +27,7 @@ services:
     build:
       context: .
       args:
-        PYTHON_BASE: ${PYTHON_BASE:-python:3.12-slim-bookworm}
+        PYTHON_BASE: ${PYTHON_BASE:-docker.lab.somansa.com/python:3.12-slim-bookworm}
     env_file:
       - .env
     expose:
@@ -34,7 +35,7 @@ services:
     restart: unless-stopped
 
   caddy:
-    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    image: ${CADDY_IMAGE:-docker.lab.somansa.com/caddy:2-alpine}
     ports:
       - "80:80"
       - "443:443"
