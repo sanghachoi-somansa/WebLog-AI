@@ -1,0 +1,14 @@
+# 도메인 전용 HTTPS 예시 — 내용을 검토한 뒤 `Caddyfile` 로 저장하거나
+# `CADDYFILE=Caddyfile.https.example docker compose up -d` 로 마운트하세요.
+#
+# 전제: 도메인 DNS A/AAAA 레코드가 이 서버 공인 IP를 가리킴.
+# 방화벽에서 80·443 인바운드 허용.
+
+{
+	# 선택: Let's Encrypt 알림용 (주석 해제 후 이메일 수정)
+	# email admin@example.com
+}
+
+logs.example.com {
+	reverse_proxy app:8501
+}

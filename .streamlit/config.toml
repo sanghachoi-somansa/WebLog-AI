@@ -1,0 +1,4 @@
+# 리버스 프록시(Caddy) 뒤에서 WebSocket·XHR 이 깨지지 않도록 완화
+[server]
+enableCORS = false
+enableXsrfProtection = false

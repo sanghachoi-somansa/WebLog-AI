@@ -1,0 +1,45 @@
+# Docker Compose + Caddy (Streamlit 앞단 프록시)
+#
+# 준비: 서버에 Docker / Compose Plugin 설치 후 프로젝트 루트에서
+#   cp .env.example .env   # 필수: compose 가 .env 를 읽음(비워 두어도 됨)
+#   docker compose up -d --build
+#
+# 접속: http://서버공인IP/  (또는 DNS가 가리키는 도메인)
+#
+# HTTPS(도메인): Caddyfile.https.example 참고해 도메인 블록으로 Caddyfile 교체 후
+#   docker compose restart caddy
+#
+# 다른 Caddy 설정 파일을 쓰려면 (PowerShell 예):
+#   $env:CADDYFILE = "Caddyfile.https.example"
+#   docker compose up -d
+#
+# Docker Hub(registry-1.docker.io) 타임아웃 시:
+#   - VPN/다른 네트워크에서 재시도, Docker Desktop 프록시 설정
+#   - 또는 미러/대체 이미지 (PowerShell): $env:CADDY_IMAGE="ghcr.io/caddy/caddy:2-alpine"
+#   - 조직 내부 레지스트리 미러가 있으면 Docker Engine registry-mirrors 설정
+
+services:
+  app:
+    build: .
+    env_file:
+      - .env
+    expose:
+      - "8501"
+    restart: unless-stopped
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

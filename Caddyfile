@@ -1,0 +1,5 @@
+# HTTP (공인 IP 또는 도메인으로 http:// 접속)
+# 브라우저: http://서버주소/
+:80 {
+	reverse_proxy app:8501
+}
