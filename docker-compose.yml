@@ -13,14 +13,20 @@
 #   $env:CADDYFILE = "Caddyfile.https.example"
 #   docker compose up -d
 #
-# Docker Hub(registry-1.docker.io) 타임아웃 시:
-#   - VPN/다른 네트워크에서 재시도, Docker Desktop 프록시 설정
-#   - 또는 미러/대체 이미지 (PowerShell): $env:CADDY_IMAGE="ghcr.io/caddy/caddy:2-alpine"
-#   - 조직 내부 레지스트리 미러가 있으면 Docker Engine registry-mirrors 설정
+# Docker Hub 타임아웃 / TLS 문제 시:
+#   - Somansa NLAB: `curl http://rocky.mirror.lab.somansa.com/cert.sh | sudo bash -`
+#     및 `curl http://rocky.mirror.lab.somansa.com/docker.sh | sudo bash -`
+#   - 이미지는 Hub 경로 앞에 미러 붙임: docker.lab.somansa.com/<이미지>
+#     → `.env` 에 예: CADDY_IMAGE=docker.lab.somansa.com/caddy:2-alpine
+#       PYTHON_BASE=docker.lab.somansa.com/library/python:3.12-slim-bookworm
+#   - 첫 pull 지연 시 10~15분 후 재시도 (NLAB 캐싱 미러 안내)
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        PYTHON_BASE: ${PYTHON_BASE:-python:3.12-slim-bookworm}
     env_file:
       - .env
     expose:
