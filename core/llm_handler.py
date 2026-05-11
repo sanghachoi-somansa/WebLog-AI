@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from openai import APIError, OpenAI
 
 from core.config import TEAM_VLLM_BASE_URL, TEAM_VLLM_MODEL, team_vllm_api_key
@@ -26,6 +28,45 @@ SECURITY_SYSTEM = (
 
 # 모델 컨텍스트·응답 길이 고려해 사용자 메시지 상한(문자)
 _MAX_USER_CHARS = 12_000
+
+_LLM_RETRY_MAX = 2
+_LLM_RETRY_SLEEP_SEC = 2.5
+
+
+def _llm_error_is_transient(exc: APIError) -> bool:
+    s = str(exc).lower()
+    code = getattr(exc, "status_code", None)
+    return bool(
+        code in (500, 502, 503, 504)
+        or "500" in s
+        or "502" in s
+        or "503" in s
+        or "connection error" in s
+        or "internalservererror" in s
+        or "litellm" in s
+        or "timeout" in s
+    )
+
+
+def _llm_error_hint(model_id: str, exc: APIError) -> str:
+    raw = str(exc)
+    parts = [
+        "\n\n[안내] 게이트웨이(LiteLLM 등)는 살아 있지만 **실제 추론 백엔드**에 연결하지 못한 경우가 많습니다. "
+        "`/v1/models` 에 보여도 **모델 그룹(라우팅)** 이 비어 있으면 500이 납니다.\n"
+        "→ `10.226.50.2` 에서 LiteLLM·Ollama·vLLM 프로세스와 라우팅 설정을 확인하세요.\n"
+        "→ 로그만 보려면 `.env` 에 `DISABLE_LLM=1`.\n"
+    ]
+    mid = (model_id or "").strip()
+    if mid.startswith(("openai/", "ollama/")):
+        parts.append(
+            f"→ 지금 모델 `{mid}` 는 접두사 라우팅이 자주 비어 있습니다. "
+            "사이드바에서 **Qwen3-VL (Base)** (`qwen3-vl`) 로 바꿔 보세요.\n"
+        )
+    if "Connection error" in raw or "InternalServerError" in raw:
+        parts.append(
+            "→ **일시적** 장애일 수 있습니다. 잠시 후 다시 시도하거나, 위와 같이 **Base** 모델로 바꿔 보세요."
+        )
+    return "".join(parts)
 
 
 def analyze_log_snippet(
@@ -52,35 +93,30 @@ def analyze_log_snippet(
         api_key=team_vllm_api_key(),
         timeout=timeout,
     )
-    try:
-        resp = client.chat.completions.create(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": SECURITY_SYSTEM},
-                {"role": "user", "content": payload},
-            ],
-            temperature=0.2,
-            max_tokens=900,
-        )
-    except APIError as e:
-        raw = str(e)
-        hint = ""
-        if (
-            "Connection error" in raw
-            or "InternalServerError" in raw
-            or "litellm" in raw.lower()
-            or "500" in raw
-        ):
-            hint = (
-                "\n\n[안내] 게이트웨이(LiteLLM 등)는 살아 있지만 **실제 추론 백엔드(Ollama·vLLM 등)** 에 "
-                "연결하지 못한 경우가 많습니다. `/v1/models` 에 모델이 보여도 inference 경로가 다를 수 있습니다.\n"
-                "→ `10.226.50.2` 서버에서 백엔드 프로세스·포트·LiteLLM 라우팅을 확인하세요.\n"
-                "→ 로그만 보려면 `.env` 에 `DISABLE_LLM=1` 로 분석 호출을 끌 수 있습니다."
+    for attempt in range(_LLM_RETRY_MAX):
+        try:
+            resp = client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": SECURITY_SYSTEM},
+                    {"role": "user", "content": payload},
+                ],
+                temperature=0.2,
+                max_tokens=900,
             )
-        return f"LLM API 오류: {e}{hint}"
-    except Exception as e:
-        return f"LLM 오류: {e}"
-
-    msg = resp.choices[0].message
-    out = (msg.content or "").strip()
-    return out if out else "(모델 응답 없음)"
+            msg = resp.choices[0].message
+            out = (msg.content or "").strip()
+            return out if out else "(모델 응답 없음)"
+        except APIError as e:
+            if (
+                attempt + 1 < _LLM_RETRY_MAX
+                and _llm_error_is_transient(e)
+            ):
+                time.sleep(_LLM_RETRY_SLEEP_SEC)
+                continue
+            hint = ""
+            if _llm_error_is_transient(e):
+                hint = _llm_error_hint(model_id, e)
+            return f"LLM API 오류: {e}{hint}"
+        except Exception as e:
+            return f"LLM 오류: {e}"

@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 
 # 공유 엔드포인트는 고정. 모델 id는 팀 로컬 설정·`/v1/models`와 일치해야 함.
-# 팀 기본(로컬 config 권장): qwen3-vl — 대안 예: qwen3-vl:latest, ollama/qwen3-vl, openai/qwen3-vl
+# 팀 기본: qwen3-vl. (운영 정책이 바뀌면 VLLM_MODEL·app.py LLM_MODEL_PRESETS 동기화)
 TEAM_VLLM_BASE_URL = "http://10.226.50.2/v1"
 TEAM_VLLM_MODEL = os.getenv("VLLM_MODEL", "qwen3-vl")
 

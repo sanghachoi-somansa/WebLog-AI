@@ -360,6 +360,12 @@ def _render_sidebar() -> None:
             "`DISABLE_LLM=1` 이 설정되어 **분석 API 호출이 꺼져** 있습니다. "
             "SSH 로그만 수집합니다."
         )
+    _mid = str(st.session_state.get("vllm_model_id", ""))
+    if _mid.startswith(("openai/", "ollama/")):
+        st.sidebar.info(
+            "`openai/`·`ollama/` 접두 모델은 LiteLLM **라우팅이 비어** 500이 나는 경우가 많습니다. "
+            "불안하면 **Qwen3-VL (Base)** (`qwen3-vl`)을 쓰세요."
+        )
     st.sidebar.caption(
         f"API `model`: `{st.session_state['vllm_model_id']}` — 첫 기본값은 `.env`의 "
         "`VLLM_MODEL`(없으면 코드 기본). `500`·`Connection error` 등은 백엔드·라우팅 이슈일 수 있음. "
