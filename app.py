@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import os
 import queue
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -12,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,7 +25,7 @@ from core.config import (
     llm_error_cooldown_seconds,
     team_vllm_models_url,
 )
-from core.llm_handler import analyze_log_snippet
+from core.llm_handler import analyze_log_snippet, answer_user_question
 from core.ssh_manager import RemoteTailError, iter_remote_tail_lines
 
 PAGE_TITLE = "LogSentinel AI"
@@ -129,10 +131,13 @@ def _ensure_session_defaults() -> None:
         "llm_futures": [],
         "llm_cooldown_until": 0.0,
         "vllm_model_id": TEAM_VLLM_MODEL,
+        "stream_generation": 0,
+        "manual_llm_future": None,
     }
     for key, val in defaults.items():
         st.session_state.setdefault(key, val)
-    st.session_state.setdefault("llm_executor", ThreadPoolExecutor(max_workers=1))
+    st.session_state.setdefault("llm_executor", ThreadPoolExecutor(max_workers=2))
+    st.session_state.setdefault("log_autoscroll", True)
     st.session_state["_logsentinel_inited"] = True
 
 
@@ -271,24 +276,34 @@ def _schedule_llm_if_needed() -> None:
 
     ex: ThreadPoolExecutor = st.session_state["llm_executor"]
     model_id = str(st.session_state.get("vllm_model_id") or TEAM_VLLM_MODEL).strip()
-    fut = ex.submit(analyze_log_snippet, snippet, model=model_id)
+    gen = int(st.session_state.get("stream_generation", 0))
+
+    def _run_batch(snip: str, mid: str, g: int) -> tuple[int, str]:
+        return g, analyze_log_snippet(snip, model=mid)
+
+    fut = ex.submit(_run_batch, snippet, model_id, gen)
     futures.append(fut)
     st.session_state["llm_futures"] = futures
 
 
 def _poll_llm_futures() -> None:
-    futures: list[Future[str]] = list(st.session_state.get("llm_futures") or [])
+    futures: list[Future[tuple[int, str]]] = list(
+        st.session_state.get("llm_futures") or []
+    )
     if not futures:
         return
-    kept: list[Future[str]] = []
+    cur_gen = int(st.session_state.get("stream_generation", 0))
+    kept: list[Future[tuple[int, str]]] = []
     for fut in futures:
         if not fut.done():
             kept.append(fut)
             continue
         try:
-            text = fut.result()
+            gen, text = fut.result()
         except Exception as e:
-            text = f"분석 스레드 오류: {e}"
+            gen, text = cur_gen, f"분석 스레드 오류: {e}"
+        if int(gen) != cur_gen:
+            continue
         stamp = datetime.now().strftime("%H:%M:%S")
         ab = str(st.session_state.get("analysis_buffer", ""))
         ab += f"\n--- [{stamp}]\n{text}\n"
@@ -306,6 +321,139 @@ def _poll_llm_futures() -> None:
         else:
             st.session_state["llm_cooldown_until"] = 0.0
     st.session_state["llm_futures"] = kept
+
+
+def _poll_manual_llm_future() -> None:
+    fut: Future[str] | None = st.session_state.get("manual_llm_future")
+    if fut is None or not isinstance(fut, Future):
+        return
+    if not fut.done():
+        return
+    st.session_state["manual_llm_future"] = None
+    try:
+        text = fut.result()
+    except Exception as e:
+        text = f"수동 질문 처리 오류: {e}"
+    stamp = datetime.now().strftime("%H:%M:%S")
+    ab = str(st.session_state.get("analysis_buffer", ""))
+    ab += f"\n--- [수동 질문 {stamp}]\n{text}\n"
+    if len(ab) > MAX_ANALYSIS_BUFFER_CHARS:
+        ab = ab[-MAX_ANALYSIS_BUFFER_CHARS:]
+    st.session_state["analysis_buffer"] = ab
+    if (
+        text.startswith("LLM API 오류")
+        or text.startswith("LLM 오류")
+        or text.startswith("수동 질문 처리 오류")
+    ):
+        st.session_state["llm_cooldown_until"] = (
+            time.monotonic() + llm_error_cooldown_seconds()
+        )
+
+
+def _detect_log_path_change_and_reset() -> None:
+    cur = str(st.session_state.get("log_path", "")).strip()
+    if "_prev_log_path" not in st.session_state:
+        st.session_state["_prev_log_path"] = cur
+        return
+    prev = str(st.session_state.get("_prev_log_path", "")).strip()
+    if cur == prev:
+        return
+    st.session_state["log_buffer"] = ""
+    st.session_state["analysis_buffer"] = ""
+    st.session_state["line_count_since_llm"] = 0
+    st.session_state["llm_futures"] = []
+    st.session_state["llm_cooldown_until"] = 0.0
+    st.session_state["worker_error"] = None
+    st.session_state["stream_generation"] = int(
+        st.session_state.get("stream_generation", 0)
+    ) + 1
+    st.session_state["manual_llm_future"] = None
+    if st.session_state.get("running"):
+        st.session_state["running"] = False
+        _stop_ssh_worker()
+    st.session_state["_prev_log_path"] = cur
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_SQL_KW_RE = re.compile(
+    r"\b(SELECT|FROM|WHERE|AND|OR|JOIN|INNER|LEFT|RIGHT|ON|"
+    r"ORDER\s+BY|GROUP\s+BY|INSERT|INTO|VALUES|UPDATE|SET|DELETE|"
+    r"LIMIT|HAVING|UNION|CASE|WHEN|THEN|ELSE|END)\b",
+    re.IGNORECASE,
+)
+
+
+def _sql_keyword_spans(escaped_line: str) -> str:
+    def repl(m: re.Match[str]) -> str:
+        return (
+            f'<span style="color:#67e8f9;font-weight:600">{m.group(0)}</span>'
+        )
+
+    return _SQL_KW_RE.sub(repl, escaped_line)
+
+
+def _format_log_line_html(line: str) -> str:
+    raw = _ANSI_ESCAPE_RE.sub("", line).rstrip("\r\n")
+    esc = html.escape(raw)
+    body = _sql_keyword_spans(esc)
+    low = raw.lower()
+    if any(
+        x in low
+        for x in ("error", "fatal", "exception", "critical", "denied", "failure")
+    ):
+        return f'<span style="color:#fca5a5">{body}</span>'
+    if "warn" in low:
+        return f'<span style="color:#fbbf24">{body}</span>'
+    if " info" in low or low.startswith("info") or "[info]" in low:
+        return f'<span style="color:#93c5fd">{body}</span>'
+    return f'<span style="color:#e4e4e7">{body}</span>'
+
+
+def _log_body_to_html(body: str) -> str:
+    lines = (body or "").splitlines()
+    if not lines:
+        return '<span style="color:#71717a">(로그 없음)</span>'
+    parts: list[str] = []
+    for ln in lines:
+        parts.append(_format_log_line_html(ln))
+    return "<br>\n".join(parts)
+
+
+def _maybe_scroll_log_bottom_into_view(enabled: bool) -> None:
+    if not enabled:
+        return
+    components.html(
+        """
+        <script>
+        const d = window.parent.document;
+        const el = d.getElementById("logsentinel-log-bottom");
+        if (el) {
+          el.scrollIntoView({behavior: "auto", block: "end"});
+        } else {
+          const main = d.querySelector("section.main");
+          if (main) { main.scrollTop = main.scrollHeight; }
+        }
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _render_log_stream_block(body: str, *, height: int, autoscroll: bool) -> None:
+    inner = _log_body_to_html(body)
+    st.markdown(
+        (
+            f'<div id="logsentinel-log-wrap" style="max-height:{height}px;overflow:auto;'
+            "font-family:ui-monospace,Consolas,monospace;font-size:0.82rem;"
+            "white-space:pre-wrap;word-break:break-word;padding:0.6rem 0.75rem;"
+            "border-radius:6px;border:1px solid rgba(128,128,128,0.28);"
+            "background:rgba(15,23,42,0.35);"
+            f'">{inner}<div id="logsentinel-log-bottom" style="height:1px;width:100%"></div></div>'
+        ),
+        unsafe_allow_html=True,
+    )
+    _maybe_scroll_log_bottom_into_view(autoscroll)
 
 
 def _render_sidebar() -> None:
@@ -373,6 +521,52 @@ def _render_sidebar() -> None:
     )
 
 
+def _render_manual_llm_section() -> None:
+    st.subheader("LLM 질문")
+    with st.expander("현재 화면에서 모델에게 직접 질문 (자동 배치 분석과 별도)", expanded=False):
+        if not llm_enabled():
+            st.warning("`DISABLE_LLM=1` 이면 API를 호출할 수 없습니다.")
+            return
+        fut = st.session_state.get("manual_llm_future")
+        if isinstance(fut, Future) and not fut.done():
+            st.info("이전 질문 처리 중입니다. 잠시만 기다려 주세요.")
+        st.text_area(
+            "질문 내용",
+            key="manual_llm_question",
+            height=110,
+            placeholder="예: 방금 로그에서 반복되는 오류의 의미는?",
+        )
+        st.checkbox(
+            "현재 로그 버퍼 끝부분을 맥락으로 함께 보내기",
+            value=True,
+            key="manual_llm_attach_logs",
+        )
+        if st.button("질문 보내기", key="btn_manual_llm_send"):
+            q = str(st.session_state.get("manual_llm_question", "")).strip()
+            if not q:
+                st.warning("질문을 입력하세요.")
+            else:
+                pending = st.session_state.get("manual_llm_future")
+                if isinstance(pending, Future) and not pending.done():
+                    st.warning("처리 중인 질문이 있습니다.")
+                else:
+                    ctx = ""
+                    if st.session_state.get("manual_llm_attach_logs", True):
+                        buf = str(st.session_state.get("log_buffer", "")).strip()
+                        if buf:
+                            ctx = buf[-LLM_SNIPPET_CHARS:]
+                    model_id = str(
+                        st.session_state.get("vllm_model_id") or TEAM_VLLM_MODEL
+                    ).strip()
+                    ex: ThreadPoolExecutor = st.session_state["llm_executor"]
+                    st.session_state["manual_llm_future"] = ex.submit(
+                        answer_user_question,
+                        q,
+                        ctx,
+                        model=model_id,
+                    )
+
+
 def _render_controls() -> None:
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
@@ -394,7 +588,7 @@ def _render_controls() -> None:
 
 
 def _render_monospace_block(body: str, *, height: int = 420) -> None:
-    """fragment에서도 매번 갱신되도록 text_area 대신 HTML pre 블록으로 표시."""
+    """분석 피드 등 단색 monospace 블록."""
     safe = html.escape(body or " ")
     st.markdown(
         (
@@ -412,6 +606,8 @@ def _render_log_analysis_panels(*, live: bool) -> None:
     if st.session_state.get("worker_error"):
         st.error(str(st.session_state["worker_error"]))
 
+    _poll_manual_llm_future()
+
     if live:
         _drain_log_queue()
         _poll_ssh_errors()
@@ -426,9 +622,26 @@ def _render_log_analysis_panels(*, live: bool) -> None:
         st.subheader("실시간 로그 스트림")
         if live and st.session_state.get("ssh_thread") and st.session_state["ssh_thread"].is_alive():
             st.caption("SSH tail 수신 중… (버퍼는 0.35초마다 갱신)")
-        _render_monospace_block(log_text or " ")
+        st.checkbox(
+            "맨 아래 자동 스크롤 (끄면 이전 줄을 스크롤로 확인)",
+            key="log_autoscroll",
+        )
+        _render_log_stream_block(
+            log_text or " ",
+            height=420,
+            autoscroll=bool(st.session_state.get("log_autoscroll", True)),
+        )
     with right:
         st.subheader("AI 보안 분석 피드")
+        n_pending = len(st.session_state.get("llm_futures") or [])
+        n_lines = int(st.session_state.get("line_count_since_llm", 0))
+        if llm_enabled():
+            st.caption(
+                f"자동 배치: `{n_lines}` / `{LLM_BATCH_MIN_LINES}` 줄마다 요청 · "
+                f"대기 중 분석 `{n_pending}`건"
+            )
+        else:
+            st.caption("LLM 비활성화(`DISABLE_LLM`) — 피드는 수동 질문만 표시됩니다.")
         _render_monospace_block(analysis_text or " ")
 
 
@@ -447,7 +660,9 @@ def main() -> None:
     )
 
     _render_sidebar()
+    _detect_log_path_change_and_reset()
     _render_controls()
+    _render_manual_llm_section()
     _sync_ssh_worker()
 
     if st.session_state.get("running") and hasattr(st, "fragment"):

@@ -8,6 +8,13 @@ from openai import APIError, OpenAI
 
 from core.config import TEAM_VLLM_BASE_URL, TEAM_VLLM_MODEL, team_vllm_api_key
 
+QA_SYSTEM = (
+    "너는 보안·시스템 엔지니어다. 사용자 질문에 **한국어**로 간결히 답하라.\n"
+    "- 아래에 '참고 로그'가 붙어 있으면 그 내용을 **근거**로 활용하고, 없는 내용은 지어내지 말 것.\n"
+    "- 로그와 무관한 일반 질문이면 일반 지식 범위에서 답해도 된다.\n"
+    "- 답은 **10문장 이내**로 정리한다."
+)
+
 SECURITY_SYSTEM = (
     "너는 숙련된 보안 엔지니어다. 사용자가 붙여 넣은 **로그 스니펫**만 근거로 분석하라. 한국어로 답하라.\n\n"
     "## 출력 형식(반드시 준수)\n"
@@ -103,6 +110,62 @@ def analyze_log_snippet(
                 ],
                 temperature=0.2,
                 max_tokens=900,
+            )
+            msg = resp.choices[0].message
+            out = (msg.content or "").strip()
+            return out if out else "(모델 응답 없음)"
+        except APIError as e:
+            if (
+                attempt + 1 < _LLM_RETRY_MAX
+                and _llm_error_is_transient(e)
+            ):
+                time.sleep(_LLM_RETRY_SLEEP_SEC)
+                continue
+            hint = ""
+            if _llm_error_is_transient(e):
+                hint = _llm_error_hint(model_id, e)
+            return f"LLM API 오류: {e}{hint}"
+        except Exception as e:
+            return f"LLM 오류: {e}"
+
+
+def answer_user_question(
+    question: str,
+    context_logs: str = "",
+    *,
+    model: str | None = None,
+    timeout: float = 120.0,
+) -> str:
+    """페이지에서 사용자가 입력한 질문에 LLM이 답한다. 선택적으로 현재 로그 맥락을 붙인다."""
+    q = (question or "").strip()
+    if not q:
+        return "(질문이 비어 있습니다.)"
+
+    ctx = (context_logs or "").strip()
+    if ctx:
+        payload = (
+            f"## 사용자 질문\n{q}\n\n"
+            f"## 참고 로그 (일부)\n{ctx[-_MAX_USER_CHARS:]}"
+        )
+    else:
+        payload = f"## 사용자 질문\n{q}"
+
+    model_id = (model or "").strip() or TEAM_VLLM_MODEL
+    client = OpenAI(
+        base_url=TEAM_VLLM_BASE_URL.rstrip("/"),
+        api_key=team_vllm_api_key(),
+        timeout=timeout,
+    )
+    for attempt in range(_LLM_RETRY_MAX):
+        try:
+            resp = client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": QA_SYSTEM},
+                    {"role": "user", "content": payload},
+                ],
+                temperature=0.3,
+                max_tokens=1200,
             )
             msg = resp.choices[0].message
             out = (msg.content or "").strip()
