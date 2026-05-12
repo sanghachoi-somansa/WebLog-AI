@@ -133,6 +133,10 @@ def _ensure_session_defaults() -> None:
         "vllm_model_id": TEAM_VLLM_MODEL,
         "stream_generation": 0,
         "manual_llm_future": None,
+        "manual_llm_last_question": "",
+        "manual_llm_last_answer": "",
+        "manual_llm_last_stamp": "",
+        "manual_llm_pending_question": "",
     }
     for key, val in defaults.items():
         st.session_state.setdefault(key, val)
@@ -335,6 +339,11 @@ def _poll_manual_llm_future() -> None:
     except Exception as e:
         text = f"수동 질문 처리 오류: {e}"
     stamp = datetime.now().strftime("%H:%M:%S")
+    st.session_state["manual_llm_last_stamp"] = stamp
+    st.session_state["manual_llm_last_answer"] = text
+    st.session_state["manual_llm_last_question"] = str(
+        st.session_state.get("manual_llm_pending_question", "")
+    )
     ab = str(st.session_state.get("analysis_buffer", ""))
     ab += f"\n--- [수동 질문 {stamp}]\n{text}\n"
     if len(ab) > MAX_ANALYSIS_BUFFER_CHARS:
@@ -368,6 +377,10 @@ def _detect_log_path_change_and_reset() -> None:
         st.session_state.get("stream_generation", 0)
     ) + 1
     st.session_state["manual_llm_future"] = None
+    st.session_state["manual_llm_last_question"] = ""
+    st.session_state["manual_llm_last_answer"] = ""
+    st.session_state["manual_llm_last_stamp"] = ""
+    st.session_state["manual_llm_pending_question"] = ""
     if st.session_state.get("running"):
         st.session_state["running"] = False
         _stop_ssh_worker()
@@ -522,26 +535,36 @@ def _render_sidebar() -> None:
 
 
 def _render_manual_llm_section() -> None:
-    st.subheader("LLM 질문")
-    with st.expander("현재 화면에서 모델에게 직접 질문 (자동 배치 분석과 별도)", expanded=False):
-        if not llm_enabled():
-            st.warning("`DISABLE_LLM=1` 이면 API를 호출할 수 없습니다.")
-            return
+    """페이지에서 LLM에 질문하고 답을 본다. 로그 스트림 fragment 안에서도 호출되어 처리 중·답변이 갱신된다."""
+    st.subheader("LLM 직접 질문")
+    st.caption(
+        "자동 로그 배치 분석과 별도로, 선택한 모델(사이드바)에 질문합니다. "
+        "답은 아래와 오른쪽 **AI 보안 분석 피드**에도 쌓입니다."
+    )
+    if not llm_enabled():
+        st.warning("`DISABLE_LLM=1` 이면 API를 호출할 수 없습니다.")
+        return
+
+    qcol, acol = st.columns([1, 1], gap="medium")
+    with qcol:
         fut = st.session_state.get("manual_llm_future")
-        if isinstance(fut, Future) and not fut.done():
-            st.info("이전 질문 처리 중입니다. 잠시만 기다려 주세요.")
+        busy = isinstance(fut, Future) and not fut.done()
+        if busy:
+            st.caption("모델이 답변을 생성하는 중…")
         st.text_area(
-            "질문 내용",
+            "질문",
             key="manual_llm_question",
-            height=110,
-            placeholder="예: 방금 로그에서 반복되는 오류의 의미는?",
+            height=120,
+            placeholder="예: 위 로그에서 Connection reset의 원인 후보는?",
+            disabled=busy,
         )
         st.checkbox(
             "현재 로그 버퍼 끝부분을 맥락으로 함께 보내기",
             value=True,
             key="manual_llm_attach_logs",
+            disabled=busy,
         )
-        if st.button("질문 보내기", key="btn_manual_llm_send"):
+        if st.button("질문 보내기", type="secondary", key="btn_manual_llm_send", disabled=busy):
             q = str(st.session_state.get("manual_llm_question", "")).strip()
             if not q:
                 st.warning("질문을 입력하세요.")
@@ -559,12 +582,31 @@ def _render_manual_llm_section() -> None:
                         st.session_state.get("vllm_model_id") or TEAM_VLLM_MODEL
                     ).strip()
                     ex: ThreadPoolExecutor = st.session_state["llm_executor"]
+                    st.session_state["manual_llm_pending_question"] = q
+                    st.session_state["manual_llm_last_answer"] = ""
+                    st.session_state["manual_llm_last_question"] = ""
+                    st.session_state["manual_llm_last_stamp"] = ""
                     st.session_state["manual_llm_future"] = ex.submit(
                         answer_user_question,
                         q,
                         ctx,
                         model=model_id,
                     )
+
+    with acol:
+        st.markdown("**마지막 답변**")
+        lq = str(st.session_state.get("manual_llm_last_question", "")).strip()
+        la = str(st.session_state.get("manual_llm_last_answer", "")).strip()
+        ls = str(st.session_state.get("manual_llm_last_stamp", "")).strip()
+        if busy:
+            st.info("답변 생성 중…")
+        elif not la:
+            st.info("아직 답변이 없습니다. 왼쪽에서 질문을 입력한 뒤 질문 보내기를 누르세요.")
+        else:
+            if lq:
+                st.markdown(f"*질문 ({ls}):* {html.escape(lq)}", unsafe_allow_html=True)
+            if la:
+                _render_monospace_block(la, height=220)
 
 
 def _render_controls() -> None:
@@ -644,6 +686,9 @@ def _render_log_analysis_panels(*, live: bool) -> None:
             st.caption("LLM 비활성화(`DISABLE_LLM`) — 피드는 수동 질문만 표시됩니다.")
         _render_monospace_block(analysis_text or " ")
 
+    st.divider()
+    _render_manual_llm_section()
+
 
 @st.fragment(run_every=0.35)
 def _live_panels_fragment() -> None:
@@ -662,7 +707,6 @@ def main() -> None:
     _render_sidebar()
     _detect_log_path_change_and_reset()
     _render_controls()
-    _render_manual_llm_section()
     _sync_ssh_worker()
 
     if st.session_state.get("running") and hasattr(st, "fragment"):
