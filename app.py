@@ -40,10 +40,13 @@ MAX_PENDING_LLM = 2
 # Somansa 제품 로그 프리셋
 # 팀 로컬 LLM 설정과 동일한 id (사이드바에서 선택)
 LLM_MODEL_PRESETS: tuple[tuple[str, str], ...] = (
-    ("Qwen3-VL (Base)", "qwen3-vl"),
-    ("Qwen3-VL (Latest)", "qwen3-vl:latest"),
-    ("Qwen3-VL (Ollama 경로)", "ollama/qwen3-vl"),
-    ("Qwen3-VL (OpenAI 경로)", "openai/qwen3-vl"),
+    ("Gemma4 (Base)", "gemma4"),
+    ("Gemma4 (:26b)", "gemma4:26b"),
+    ("Gemma4 (latest)", "gemma4:latest"),
+    ("Gemma-4 (id)", "gemma-4"),
+    ("Ollama /gemma4", "ollama/gemma4"),
+    ("Ollama /gemma4:26b", "ollama/gemma4:26b"),
+    ("OpenAI /gemma4", "openai/gemma4"),
 )
 
 LOG_PATH_PRESETS: tuple[tuple[str, str], ...] = (
@@ -524,8 +527,8 @@ def _render_sidebar() -> None:
     _mid = str(st.session_state.get("vllm_model_id", ""))
     if _mid.startswith(("openai/", "ollama/")):
         st.sidebar.info(
-            "`openai/`·`ollama/` 접두 모델은 LiteLLM **라우팅이 비어** 500이 나는 경우가 많습니다. "
-            "불안하면 **Qwen3-VL (Base)** (`qwen3-vl`)을 쓰세요."
+            "`openai/`·`ollama/` 접두 모델은 게이트웨이 **라우팅이 비어** 500이 나는 경우가 있습니다. "
+            "불안하면 **Gemma4 (Base)** (`gemma4`)를 쓰세요."
         )
     st.sidebar.caption(
         f"API `model`: `{st.session_state['vllm_model_id']}` — 첫 기본값은 `.env`의 "

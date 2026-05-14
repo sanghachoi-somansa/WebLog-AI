@@ -8,9 +8,9 @@ from __future__ import annotations
 import os
 
 # 공유 엔드포인트는 고정. 모델 id는 팀 로컬 설정·`/v1/models`와 일치해야 함.
-# 팀 기본: qwen3-vl. (운영 정책이 바뀌면 VLLM_MODEL·app.py LLM_MODEL_PRESETS 동기화)
+# 팀 기본: gemma4. (운영 정책이 바뀌면 VLLM_MODEL·app.py LLM_MODEL_PRESETS 동기화)
 TEAM_VLLM_BASE_URL = "http://10.226.50.2/v1"
-TEAM_VLLM_MODEL = os.getenv("VLLM_MODEL", "qwen3-vl")
+TEAM_VLLM_MODEL = os.getenv("VLLM_MODEL", "gemma4")
 
 
 def team_vllm_models_url() -> str:

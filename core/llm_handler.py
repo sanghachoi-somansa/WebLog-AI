@@ -67,7 +67,7 @@ def _llm_error_hint(model_id: str, exc: APIError) -> str:
     if mid.startswith(("openai/", "ollama/")):
         parts.append(
             f"→ 지금 모델 `{mid}` 는 접두사 라우팅이 자주 비어 있습니다. "
-            "사이드바에서 **Qwen3-VL (Base)** (`qwen3-vl`) 로 바꿔 보세요.\n"
+            "사이드바에서 **Gemma4 (Base)** (`gemma4`) 로 바꿔 보세요.\n"
         )
     if "Connection error" in raw or "InternalServerError" in raw:
         parts.append(
